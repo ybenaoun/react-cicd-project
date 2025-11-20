@@ -1,0 +1,171 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_IMAGE = "react-app-dev"
+        DOCKER_TAG = "dev-${env.BUILD_NUMBER}"
+        PORT = "3001"
+        NODE_VERSIONS = "16,18,20"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🔍 Checkout dev branch"
+                    checkout scm
+                    sh "git checkout dev"
+                }
+            }
+        }
+        
+        stage('Setup') {
+            steps {
+                script {
+                    echo "📦 Installing dependencies..."
+                    sh '''
+                        node --version
+                        npm --version
+                        npm ci
+                    '''
+                }
+            }
+        }
+        
+        stage('Parallel Node Builds') {
+            parallel {
+                stage('Build Node 16') {
+                    steps {
+                        script {
+                            echo "🔨 Building with Node 16..."
+                            sh """
+                                docker run --rm -v \$(pwd):/app -w /app node:16-alpine \
+                                sh -c 'npm ci && npm run build'
+                                mv build build-node16
+                            """
+                        }
+                    }
+                }
+                stage('Build Node 18') {
+                    steps {
+                        script {
+                            echo "🔨 Building with Node 18..."
+                            sh """
+                                docker run --rm -v \$(pwd):/app -w /app node:18-alpine \
+                                sh -c 'npm ci && npm run build'
+                                mv build build-node18
+                            """
+                        }
+                    }
+                }
+                stage('Build Node 20') {
+                    steps {
+                        script {
+                            echo "🔨 Building with Node 20..."
+                            sh """
+                                docker run --rm -v \$(pwd):/app -w /app node:20-alpine \
+                                sh -c 'npm ci && npm run build'
+                                mv build build-node20
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo "🐳 Building Docker image..."
+                    sh """
+                        cp -r build-node18 build
+                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -f Dockerfile.multistage .
+                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Run Container') {
+            steps {
+                script {
+                    echo "🚀 Starting Docker container..."
+                    sh """
+                        docker stop ${DOCKER_IMAGE} || true
+                        docker rm ${DOCKER_IMAGE} || true
+                        docker run -d \
+                        --name ${DOCKER_IMAGE} \
+                        -p ${PORT}:80 \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        
+                        echo "Waiting for container to be ready..."
+                        sleep 15
+                    """
+                }
+            }
+        }
+        
+        stage('Smoke Test') {
+            steps {
+                script {
+                    echo "🧪 Running comprehensive smoke tests..."
+                    sh """
+                        chmod +x scripts/smoke-test.sh
+                        ./scripts/smoke-test.sh http://localhost:${PORT}
+                        
+                        chmod +x scripts/health-check.sh
+                        ./scripts/health-check.sh http://localhost:${PORT}
+                    """
+                }
+            }
+        }
+        
+        stage('Archive Artifacts') {
+            steps {
+                script {
+                    echo "📦 Archiving artifacts..."
+                    sh """
+                        mkdir -p artifacts/dev-${BUILD_NUMBER}
+                        
+                        echo "Dev Build ${BUILD_NUMBER}" > artifacts/dev-${BUILD_NUMBER}/build-info.txt
+                        echo "Status: SUCCESS" >> artifacts/dev-${BUILD_NUMBER}/build-info.txt
+                        echo "Date: \$(date)" >> artifacts/dev-${BUILD_NUMBER}/build-info.txt
+                        echo "Commit: \$(git rev-parse HEAD)" >> artifacts/dev-${BUILD_NUMBER}/build-info.txt
+                        
+                        docker logs ${DOCKER_IMAGE} > artifacts/dev-${BUILD_NUMBER}/docker-logs.txt 2>&1 || true
+                        
+                        cp -r build-node16 artifacts/dev-${BUILD_NUMBER}/ || true
+                        cp -r build-node18 artifacts/dev-${BUILD_NUMBER}/ || true
+                        cp -r build-node20 artifacts/dev-${BUILD_NUMBER}/ || true
+                    """
+                    archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
+                }
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                script {
+                    echo "🧹 Cleaning up..."
+                    sh """
+                        docker stop ${DOCKER_IMAGE} || true
+                        docker rm ${DOCKER_IMAGE} || true
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ Dev Build PASSED"
+        }
+        failure {
+            echo "❌ Dev Build FAILED"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

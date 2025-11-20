@@ -1,0 +1,134 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(name: 'PR_NUMBER', defaultValue: '', description: 'Pull Request Number')
+        string(name: 'SOURCE_BRANCH', defaultValue: '', description: 'Source Branch')
+    }
+    
+    environment {
+        DOCKER_IMAGE = "react-app-pr-${env.PR_NUMBER}"
+        DOCKER_TAG = "pr-${env.BUILD_NUMBER}"
+        PORT = "300${env.PR_NUMBER}"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "🔍 Checkout PR #${params.PR_NUMBER}"
+                    checkout scm
+                    sh "git checkout ${params.SOURCE_BRANCH}"
+                }
+            }
+        }
+        
+        stage('Setup') {
+            steps {
+                script {
+                    echo "📦 Installing dependencies..."
+                    sh '''
+                        node --version
+                        npm --version
+                        npm ci
+                    '''
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    echo "🔨 Building React application..."
+                    sh 'npm run build'
+                }
+            }
+        }
+        
+        stage('Docker Build') {
+            steps {
+                script {
+                    echo "🐳 Building Docker image..."
+                    sh """
+                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -f Dockerfile.multistage .
+                    """
+                }
+            }
+        }
+        
+        stage('Run Container') {
+            steps {
+                script {
+                    echo "🚀 Starting Docker container..."
+                    sh """
+                        docker stop ${DOCKER_IMAGE} || true
+                        docker rm ${DOCKER_IMAGE} || true
+                        docker run -d \
+                        --name ${DOCKER_IMAGE} \
+                        -p ${PORT}:80 \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                        
+                        echo "Waiting for container to be ready..."
+                        sleep 10
+                    """
+                }
+            }
+        }
+        
+        stage('Smoke Test') {
+            steps {
+                script {
+                    echo "🧪 Running smoke tests..."
+                    sh """
+                        chmod +x scripts/smoke-test.sh
+                        ./scripts/smoke-test.sh http://localhost:${PORT}
+                    """
+                }
+            }
+        }
+        
+        stage('Archive Artifacts') {
+            steps {
+                script {
+                    echo "📦 Archiving artifacts..."
+                    sh """
+                        mkdir -p artifacts/pr-${PR_NUMBER}
+                        echo "PR #${PR_NUMBER} - Build ${BUILD_NUMBER}" > artifacts/pr-${PR_NUMBER}/build-info.txt
+                        echo "Status: SUCCESS" >> artifacts/pr-${PR_NUMBER}/build-info.txt
+                        echo "Branch: ${SOURCE_BRANCH}" >> artifacts/pr-${PR_NUMBER}/build-info.txt
+                        echo "Date: \$(date)" >> artifacts/pr-${PR_NUMBER}/build-info.txt
+                        
+                        docker logs ${DOCKER_IMAGE} > artifacts/pr-${PR_NUMBER}/docker-logs.txt 2>&1 || true
+                    """
+                    archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
+                }
+            }
+        }
+        
+        stage('Cleanup') {
+            steps {
+                script {
+                    echo "🧹 Cleaning up..."
+                    sh """
+                        docker stop ${DOCKER_IMAGE} || true
+                        docker rm ${DOCKER_IMAGE} || true
+                        docker rmi ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ PR Build & Smoke Test PASSED"
+        }
+        failure {
+            echo "❌ PR Build & Smoke Test FAILED"
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
