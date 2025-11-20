@@ -1,9 +1,8 @@
-FROM nginx:alpine
-
+FROM node:lts-alpine
 WORKDIR /app
 COPY package*.json ./
-COPY . .
 RUN npm install
+COPY . . 
 RUN npm run build
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+CMD ["npm", "start"]
+EXPOSE 3000
