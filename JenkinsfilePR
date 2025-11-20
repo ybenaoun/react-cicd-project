@@ -1,88 +1,52 @@
 pipeline {
     agent any
     
-    parameters {
-        string(name: 'PR_NUMBER', defaultValue: '', description: 'Pull Request Number')
-        string(name: 'SOURCE_BRANCH', defaultValue: '', description: 'Source Branch')
-    }
-    
     environment {
-        DOCKER_IMAGE = "react-app-pr-${env.PR_NUMBER}"
-        DOCKER_TAG = "pr-${env.BUILD_NUMBER}"
-        PORT = "300${env.PR_NUMBER}"
+       IMAGE = "ybenaoun/react-cicd-project"
+       TAG="build-${env.BUILD_NUMBER}"
     }
     
     stages {
         stage('Checkout') {
-            steps {
-                script {
-                    echo "🔍 Checkout PR #${params.PR_NUMBER}"
+                steps {
+                    echo "🔍 Checkout PR"
                     checkout scm
-                    sh "git checkout ${params.SOURCE_BRANCH}"
-                }
             }
         }
         
         stage('Setup') {
             steps {
-                script {
                     echo "📦 Installing dependencies..."
                     sh '''
                         node --version
                         npm --version
                         npm ci
                     '''
-                }
             }
         }
         
         stage('Build') {
             steps {
-                script {
                     echo "🔨 Building React application..."
-                    sh 'npm run build'
-                }
+                    bat 'npm run build'
             }
         }
         
         stage('Docker Build') {
             steps {
-                script {
                     echo "🐳 Building Docker image..."
-                    sh """
-                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
-                        -f Dockerfile.multistage .
-                    """
-                }
+                    bat 'docker version'
+                    bat "docker build -t %IMAGE%:%TAG% ."
             }
         }
-        
-        stage('Run Container') {
-            steps {
-                script {
-                    echo "🚀 Starting Docker container..."
-                    sh """
-                        docker stop ${DOCKER_IMAGE} || true
-                        docker rm ${DOCKER_IMAGE} || true
-                        docker run -d \
-                        --name ${DOCKER_IMAGE} \
-                        -p ${PORT}:80 \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG}
-                        
-                        echo "Waiting for container to be ready..."
-                        sleep 10
-                    """
-                }
-            }
-        }
-        
+
         stage('Smoke Test') {
             steps {
                 script {
                     echo "🧪 Running smoke tests..."
                     sh """
                         chmod +x scripts/smoke-test.sh
-                        ./scripts/smoke-test.sh http://localhost:${PORT}
+                        ./scripts/smoke-test.sh http://localhost:3000
                     """
                 }
             }
