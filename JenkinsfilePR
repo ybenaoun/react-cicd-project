@@ -39,6 +39,20 @@ pipeline {
                     bat "docker build -t %IMAGE%:%TAG% ."
             }
         }
+        stage('Push (Docker Hub)') {
+            steps {
+                    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'USER',
+                    passwordVariable: 'PASS')]) {
+                        bat """
+                            echo %PASS% | docker login -u %USER% --password-stdin
+                            docker tag %IMAGE%:%TAG% %IMAGE%:latest
+                            docker push %IMAGE%:%TAG%
+                            docker push %IMAGE%:latest
+                            """
+                    }
+                }
+        }
 
         stage('Smoke Test') {
             steps {
