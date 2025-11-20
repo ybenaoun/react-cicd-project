@@ -2,99 +2,115 @@ pipeline {
     agent any
     
     environment {
-       IMAGE = "ybenaoun/react-cicd-project"
-       TAG="build-${env.BUILD_NUMBER}"
+        DOCKER_IMAGE = "react-app-pr-${env.BUILD_NUMBER}"
+        DOCKER_TAG = "pr-${env.BUILD_NUMBER}"
+        PORT = "3001"
     }
     
     stages {
         stage('Checkout') {
-                steps {
-                    echo "🔍 Checkout PR"
+            steps {
+                script {
+                    echo "🔍 Checkout PR from SCM"
                     checkout scm
+                    
+                    // Obtenir les informations de la PR depuis l'environnement Git
+                    bat '''
+                        git log -1 --pretty=format:"Commit: %%H%%nAuthor: %%an%%nDate: %%ad" > pr-info.txt
+                        type pr-info.txt
+                    '''
+                }
             }
         }
         
         stage('Setup') {
             steps {
+                script {
                     echo "📦 Installing dependencies..."
                     bat '''
                         node --version
                         npm --version
                         npm ci
                     '''
+                }
             }
         }
         
         stage('Build') {
             steps {
+                script {
                     echo "🔨 Building React application..."
-                    bat 'npm install'
                     bat 'npm run build'
+                }
             }
         }
         
         stage('Docker Build') {
             steps {
+                script {
                     echo "🐳 Building Docker image..."
-                    bat 'docker version'
-                    bat "docker build -t %IMAGE%:%TAG% ."
+                    bat """
+                        docker build -t %DOCKER_IMAGE%:%DOCKER_TAG% -f Dockerfile.multistage .
+                    """
+                }
             }
         }
-        stage('Push (Docker Hub)') {
+        
+        stage('Run Container') {
             steps {
-                    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
-                    usernameVariable: 'USER',
-                    passwordVariable: 'PASS')]) {
-                        bat """
-                            echo %PASS% | docker login -u %USER% --password-stdin
-                            docker tag %IMAGE%:%TAG% %IMAGE%:latest
-                            docker push %IMAGE%:%TAG%
-                            docker push %IMAGE%:latest
-                            """
-                    }
+                script {
+                    echo "🚀 Starting Docker container..."
+                    bat """
+                        docker stop %DOCKER_IMAGE% 2>nul || echo Container not running
+                        docker rm %DOCKER_IMAGE% 2>nul || echo Container not found
+                        docker run -d --name %DOCKER_IMAGE% -p %PORT%:80 %DOCKER_IMAGE%:%DOCKER_TAG%
+                        
+                        echo Waiting for container to be ready...
+                        timeout /t 10 /nobreak
+                    """
                 }
+            }
         }
-
+        
         stage('Smoke Test') {
             steps {
-                
+                script {
                     echo "🧪 Running smoke tests..."
-                    bat """
-                        chmod +x scripts/smoke-test.sh
-                        ./scripts/smoke-test.sh http://localhost:3000
-                    """
-                
+                    bat '''
+                        call scripts\\smoke-test.bat http://localhost:%PORT%
+                    '''
+                }
             }
         }
         
         stage('Archive Artifacts') {
             steps {
-                
+                script {
                     echo "📦 Archiving artifacts..."
                     bat """
-                        mkdir -p artifacts/pr-${PR_NUMBER}
-                        echo "PR #${PR_NUMBER} - Build ${BUILD_NUMBER}" > artifacts/pr-${PR_NUMBER}/build-info.txt
-                        echo "Status: SUCCESS" >> artifacts/pr-${PR_NUMBER}/build-info.txt
-                        echo "Branch: ${SOURCE_BRANCH}" >> artifacts/pr-${PR_NUMBER}/build-info.txt
-                        echo "Date: \$(date)" >> artifacts/pr-${PR_NUMBER}/build-info.txt
+                        if not exist artifacts\\pr-%BUILD_NUMBER% mkdir artifacts\\pr-%BUILD_NUMBER%
                         
-                        docker logs ${DOCKER_IMAGE} > artifacts/pr-${PR_NUMBER}/docker-logs.txt 2>&1 || true
+                        echo PR Build %BUILD_NUMBER% > artifacts\\pr-%BUILD_NUMBER%\\build-info.txt
+                        echo Status: SUCCESS >> artifacts\\pr-%BUILD_NUMBER%\\build-info.txt
+                        echo Date: %DATE% %TIME% >> artifacts\\pr-%BUILD_NUMBER%\\build-info.txt
+                        
+                        docker logs %DOCKER_IMAGE% > artifacts\\pr-%BUILD_NUMBER%\\docker-logs.txt 2>&1
                     """
                     archiveArtifacts artifacts: 'artifacts/**/*', fingerprint: true
-                
+                }
             }
         }
         
         stage('Cleanup') {
             steps {
-                
+                script {
                     echo "🧹 Cleaning up..."
                     bat """
-                        docker stop ${DOCKER_IMAGE} || true
-                        docker rm ${DOCKER_IMAGE} || true
-                        docker rmi ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                        docker stop %DOCKER_IMAGE% 2>nul || echo Already stopped
+                        docker rm %DOCKER_IMAGE% 2>nul || echo Already removed
+                        docker rmi %DOCKER_IMAGE%:%DOCKER_TAG% 2>nul || echo Image already removed
                     """
-                
+                }
             }
         }
     }
