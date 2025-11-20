@@ -28,6 +28,7 @@ pipeline {
         stage('Build') {
             steps {
                     echo "🔨 Building React application..."
+                    bat 'npm install'
                     bat 'npm run build'
             }
         }
